@@ -1,0 +1,17 @@
+# Derlenmiş PyInstaller Çıktıları
+dist/
+build/
+*.spec
+
+# Python Geçici Dosyaları
+__pycache__/
+*.pyc
+*.pyo
+
+# Veritabanı ve Log Dosyaları
+*.db
+*.sqlite3
+*.log
+
+# Çevre Değişkenleri (Şifreler, API Anahtarları vb. olursa diye)
+.env
