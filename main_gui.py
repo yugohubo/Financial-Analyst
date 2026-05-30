@@ -19,13 +19,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QColor, QFont, QIcon, QTextCursor
 
-# Matplotlib integration in Qt6
-import matplotlib
-matplotlib.use("QtAgg")
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
-import mplcyberpunk
+# PyQtGraph integration
+import pyqtgraph as pg
+from PyQt6 import QtCore, QtGui
 
 # Core modules
 import database
@@ -54,6 +50,7 @@ class ResearchWorker(QThread):
         self.bridge_agent = BridgeAgent()
         self.scraper = InProcessScraper()
         self.analysis_engine = AnalysisEngine()
+        self.is_cancelled = False
 
     def emit_log(self, agent: str, level: str, message: str):
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -75,6 +72,7 @@ class ResearchWorker(QThread):
         self.emit_log("System", "INFO", f"Research started for {self.name} ({self.symbol})")
         
         # Step 1: Fetch historical price data (90 days)
+        if self.is_cancelled: return
         df = self.analysis_engine.fetch_historical_data(self.symbol, period_days=90)
         if df.empty:
             raise ValueError("Yahoo Finance historical price data could not be downloaded.")
@@ -83,16 +81,25 @@ class ResearchWorker(QThread):
         self.progress_signal.emit(30, f"[{self.symbol}] Teknik göstergeler ve ARIMA tahmini hesaplanıyor...")
         
         # Step 2: Run ARIMA forecasting
+        if self.is_cancelled: return
         forecast_data = self.analysis_engine.run_arima_forecast(df)
         
         # Step 3: Discover relevant articles via Bridge Agent (DuckDuckGo Search)
         self.progress_signal.emit(50, f"[{self.symbol}] İnternette makroekonomik haberler araştırılıyor...")
-        discovered_articles = self.bridge_agent.discover_articles(self.symbol, self.name, max_results=3)
+        discovered_articles = await self.bridge_agent.discover_articles(self.symbol, self.name, self.model_name, max_results=6)
         
         # Step 4: Scrape found URLs and index them
         self.progress_signal.emit(70, f"[{self.symbol}] Haber içerikleri kazınıyor ve yerel veritabanına kaydediliyor...")
         scraped_count = 0
+        target_count = 6
         for art in discovered_articles:
+            if self.is_cancelled:
+                self.emit_log("System", "WARNING", "İşlem kullanıcı tarafından durduruldu.")
+                break
+                
+            if scraped_count >= target_count:
+                break
+                
             url = art["url"]
             title = art["title"]
             source = art["source"]
@@ -104,7 +111,8 @@ class ResearchWorker(QThread):
                 content = scraped_data.get("content", "")
                 
                 # Post-scrape content relevance density verification to block 'dirty' or empty data
-                if not self.bridge_agent.verify_content_relevance(self.symbol, content):
+                # Works internally only if strict_mode is True (from settings)
+                if not await self.bridge_agent.verify_content_relevance(self.symbol, self.name, content, self.model_name, source):
                     self.emit_log("Fast Scraper", "WARNING", f"Skipping low-relevance clickbait/SPA shell: [{source}]")
                     continue
                     
@@ -129,9 +137,12 @@ class ResearchWorker(QThread):
                     summary=art.get("snippet", "")[:400]
                 )
                 scraped_count += 1
-                self.emit_log("Fast Scraper", "INFO", f"Saved and indexed article from [{source}]: {title[:35]}...")
+                self.emit_log("Fast Scraper", "INFO", f"Saved and indexed article {scraped_count}/{target_count} from [{source}]: {title[:35]}...")
             except Exception as scrape_err:
                 self.emit_log("Fast Scraper", "WARNING", f"Could not scrape {url}: {str(scrape_err)}")
+        
+        if self.is_cancelled:
+            return
         
         self.emit_log("System", "INFO", f"Scraped and indexed {scraped_count} articles for {self.symbol}.")
         
@@ -434,7 +445,14 @@ class SettingsDialog(QDialog):
         # Model selection dropdown
         self.model_label = QLabel("Model Seçimi:")
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["Google Gemini (Bulut)", "Local Ollama (GPT-OSS 120B)"])
+        # Set it to editable so users can type their specific Ollama model (e.g. granite4.1:3b)
+        self.model_combo.setEditable(True)
+        self.model_combo.addItems([
+            "llama3.1:8b", 
+            "qwen2.5:7b", 
+            "granite-code:3b",
+            "Google Gemini (Bulut)"
+        ])
         model_layout = QHBoxLayout()
         model_layout.addWidget(self.model_label)
         model_layout.addWidget(self.model_combo)
@@ -486,11 +504,14 @@ class SettingsDialog(QDialog):
         """Loads settings from database into fields."""
         gemini_key = database.get_setting("gemini_api_key", "")
         self.key_input.setText(gemini_key)
-        # Load selected model from settings
-        model_choice = database.get_setting("model_choice", "Google Gemini (Bulut)")
+        # Load selected model from settings, default to llama3.1:8b
+        model_choice = database.get_setting("model_choice", "llama3.1:8b")
         idx = self.model_combo.findText(model_choice)
         if idx >= 0:
             self.model_combo.setCurrentIndex(idx)
+        else:
+            # If the user typed a custom model name that isn't in the list, set it as text
+            self.model_combo.setCurrentText(model_choice)
         
         # Load strict mode
         is_strict = database.get_setting("strict_mode", "false") == "true"
@@ -557,95 +578,140 @@ class SettingsDialog(QDialog):
                 QMessageBox.critical(self, "Bağlantı Başarısız", f"❌ Bulut bağlantısı kurulamadı. Hata:\n{last_err}")
         except Exception as e:
             QMessageBox.critical(self, "Bağlantı Hatası", f"❌ Sunucuya bağlanılamadı:\n{str(e)}")
-        finally:
-            self.test_btn.setEnabled(True)
-            self.model_combo.setEnabled(True)
-            self.test_btn.setText("🔌 Bağlantıyı Test Et")
+# --- Embedded PyQtGraph Interactive Line Canvas ---
 
-# --- Embedded Matplotlib Canvas Widget ---
+class InteractiveChartCanvas(pg.GraphicsLayoutWidget):
+    """Interactive PyQtGraph layout integrated into PyQt6 with Cyberpunk glowing aesthetics."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setBackground('#121214')
+        
+        # Crosshair styling
+        self.crosshair_v = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color='#8f90a6', style=QtCore.Qt.PenStyle.DashLine))
+        self.crosshair_h = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(color='#8f90a6', style=QtCore.Qt.PenStyle.DashLine))
+        
+        # Add a text item to display hover info
+        self.hover_label = pg.TextItem(color='#ffffff', anchor=(0, 1), fill=pg.mkBrush(0, 0, 0, 150))
+        
+        # Create Plots
+        self.p1 = self.addPlot(row=0, col=0)  # Price Plot
+        self.p1.showGrid(x=True, y=True, alpha=0.3)
+        self.p1.getAxis('left').setTextPen('#8f90a6')
+        self.p1.getAxis('bottom').setTextPen('#8f90a6')
+        self.p1.addItem(self.crosshair_v, ignoreBounds=True)
+        self.p1.addItem(self.crosshair_h, ignoreBounds=True)
+        self.p1.addItem(self.hover_label, ignoreBounds=True)
+        self.p1.addLegend(offset=(10, 10))
+        
+        self.p2 = self.addPlot(row=1, col=0)  # RSI Plot
+        self.p2.addLegend(offset=(10, 10))
+        self.p2.setMaximumHeight(200)
+        self.p2.showGrid(x=True, y=True, alpha=0.3)
+        self.p2.getAxis('left').setTextPen('#8f90a6')
+        self.p2.getAxis('bottom').setTextPen('#8f90a6')
+        
+        # Link X axes
+        self.p2.setXLink(self.p1)
+        
+        # Setup crosshair proxy
+        self.proxy = pg.SignalProxy(self.scene().sigMouseMoved, rateLimit=60, slot=self.mouseMoved)
+        
+        self.x_dates = []
+        self.close_prices = []
+        self.rsi_values = []
+        
+        # Add RSI standard lines
+        self.p2.addLine(y=70, pen=pg.mkPen('#ff1744', style=QtCore.Qt.PenStyle.DashLine))
+        self.p2.addLine(y=30, pen=pg.mkPen('#00e676', style=QtCore.Qt.PenStyle.DashLine))
 
-class MplCanvas(FigureCanvas):
-    """Interactive Matplotlib canvas integrated into PyQt6, utilizing Cyberpunk glowing visuals."""
-    def __init__(self, width: int = 7, height: int = 5, dpi: int = 100) -> None:
-        self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor='#121214')
-        super().__init__(self.fig)
-        
-        # Configure overall figure properties
-        self.fig.subplots_adjust(hspace=0.35, bottom=0.12, top=0.92, left=0.1, right=0.95)
-        
-        # Subplot 1: Price and ARIMA Forecast
-        self.ax_price = self.fig.add_subplot(2, 1, 1)
-        self.ax_price.set_facecolor('#121214')
-        
-        # Subplot 2: RSI Oscillator
-        self.ax_rsi = self.fig.add_subplot(2, 1, 2)
-        self.ax_rsi.set_facecolor('#121214')
+    def mouseMoved(self, evt):
+        pos = evt[0]
+        if self.p1.sceneBoundingRect().contains(pos):
+            mousePoint = self.p1.vb.mapSceneToView(pos)
+            index = int(mousePoint.x())
+            if 0 <= index < len(self.x_dates):
+                date_str = self.x_dates[index]
+                price = self.close_prices[index] if index < len(self.close_prices) else 0
+                rsi = self.rsi_values[index] if index < len(self.rsi_values) else 0
+                
+                self.hover_label.setText(f"Tarih: {date_str}\\nFiyat: {price:.2f}\\nRSI: {rsi:.2f}")
+                self.hover_label.setPos(mousePoint.x(), mousePoint.y())
+                
+                self.crosshair_v.setPos(mousePoint.x())
+                self.crosshair_h.setPos(mousePoint.y())
+                
+        elif self.p2.sceneBoundingRect().contains(pos):
+            mousePoint = self.p2.vb.mapSceneToView(pos)
+            self.crosshair_v.setPos(mousePoint.x())
 
     def plot_data(self, symbol: str, name: str, price_df: pd.DataFrame, forecast_dict: Optional[Dict[str, Any]] = None):
-        """Draws historical prices, moving averages, and ARIMA forecast bands with a premium cyberpunk look."""
-        self.ax_price.clear()
-        self.ax_rsi.clear()
+        """Draws interactive Candlesticks, SMAs, and ARIMA forecast bands using PyQtGraph."""
+        self.p1.clear()
+        self.p2.clear()
+        
+        # Re-add persistent items
+        self.p1.addItem(self.crosshair_v, ignoreBounds=True)
+        self.p1.addItem(self.crosshair_h, ignoreBounds=True)
+        self.p1.addItem(self.hover_label, ignoreBounds=True)
+        self.p2.addLine(y=70, pen=pg.mkPen('#ff1744', style=QtCore.Qt.PenStyle.DashLine))
+        self.p2.addLine(y=30, pen=pg.mkPen('#00e676', style=QtCore.Qt.PenStyle.DashLine))
         
         if price_df.empty:
-            # Draw placeholder when no data loaded yet
-            self.ax_price.text(0.5, 0.5, "Piyasa Verisi Bekleniyor...\nLütfen 'Araştır' Butonuna Tıklayarak Ajanı Başlatın.",
-                               color='#8f90a6', ha='center', va='center', transform=self.ax_price.transAxes, fontsize=12)
-            self.ax_rsi.text(0.5, 0.5, "RSI Hesaplanıyor...", color='#8f90a6', ha='center', va='center', transform=self.ax_rsi.transAxes, fontsize=11)
-            self.draw()
             return
 
         try:
-            # Apply cyberpunk styling
-            plt.style.use("dark_background")
+            self.p1.setTitle(f"{name} ({symbol}) İnteraktif Analiz Grafiği", color='#ffffff')
             
-            # --- Draw Main Price Chart ---
-            dates = price_df.index
-            close_prices = price_df['Close']
+            # --- Prepare Data ---
+            dates_pd = price_df.index
+            self.x_dates = [d.strftime('%Y-%m-%d') for d in dates_pd]
+            x_indices = list(range(len(self.x_dates)))
             
-            # Draw historical close line
-            line_close, = self.ax_price.plot(dates, close_prices, label="Fiyat", color="#00e676", linewidth=2.0)
+            # Clean data to avoid PyQtGraph crashes
+            price_df['Close'] = price_df['Close'].ffill().bfill()
+            close_prices = price_df['Close'].values
+            self.close_prices = close_prices
             
-            # Compute SMAs on the fly for plot consistency
-            sma_20 = close_prices.rolling(window=20).mean()
-            sma_50 = close_prices.rolling(window=min(50, len(close_prices))).mean()
+            # --- Draw Main Price Line ---
+            # We use a line plot instead of Candlesticks to prevent missing data (NaN) crashes
+            self.p1.plot(x_indices, close_prices, pen=pg.mkPen('#00e676', width=2.5), name="Fiyat", connect='finite')
             
-            line_sma20, = self.ax_price.plot(dates, sma_20, label="SMA 20", color="#2979ff", linewidth=1.2, linestyle="--")
-            line_sma50, = self.ax_price.plot(dates, sma_50, label="SMA 50", color="#ff9100", linewidth=1.2, linestyle=":")
+            # --- SMAs ---
+            sma_20 = price_df['Close'].rolling(window=20).mean().values
+            sma_50 = price_df['Close'].rolling(window=min(50, len(price_df))).mean().values
             
-            self.ax_price.set_title(f"{name} ({symbol}) Fiyat Hareketi ve 7 Günlük Tahmin", color='#ffffff', fontsize=12, fontweight='bold')
-            self.ax_price.set_ylabel("Fiyat", color='#8f90a6')
-            self.ax_price.tick_params(colors='#8f90a6', labelsize=9)
-            self.ax_price.grid(True, color='#22232a', linestyle='-', alpha=0.5)
+            self.p1.plot(x_indices, sma_20, pen=pg.mkPen('#2979ff', width=2, style=QtCore.Qt.PenStyle.DashLine), name="SMA 20", connect='finite')
+            self.p1.plot(x_indices, sma_50, pen=pg.mkPen('#ff9100', width=2, style=QtCore.Qt.PenStyle.DashLine), name="SMA 50", connect='finite')
             
             # --- Draw ARIMA Forecast (if available) ---
             if forecast_dict:
                 f_dates_str = forecast_dict.get("dates", [])
-                f_dates = [pd.to_datetime(d) for d in f_dates_str]
                 f_mean = forecast_dict.get("mean", [])
                 f_lower = forecast_dict.get("lower", [])
                 f_upper = forecast_dict.get("upper", [])
                 
-                if f_dates and f_mean:
-                    # Stitch last historical price point to forecast start to make chart seamless
-                    extended_dates = [dates[-1]] + f_dates
-                    extended_mean = [close_prices.iloc[-1]] + f_mean
-                    extended_lower = [close_prices.iloc[-1]] + f_lower
-                    extended_upper = [close_prices.iloc[-1]] + f_upper
+                if f_dates_str and f_mean:
+                    # Extend indices for forecast
+                    start_f_idx = len(x_indices) - 1
+                    f_indices = [start_f_idx + i for i in range(len(f_dates_str) + 1)]
                     
-                    # Plot dotted forecasting line in bright neon pink
-                    line_f, = self.ax_price.plot(extended_dates, extended_mean, label="7G Tahmin", color="#ff1744", linewidth=2.0, linestyle=":")
+                    self.x_dates.extend(f_dates_str)
                     
-                    # Shade the 95% Confidence Interval band
-                    self.ax_price.fill_between(
-                        extended_dates, extended_lower, extended_upper,
-                        color="#ff1744", alpha=0.12, label="95% Güven Aralığı"
-                    )
-            
-            self.ax_price.legend(facecolor='#1c1c22', edgecolor='#2c2c35', loc='best', fontsize=9)
-            
-            # --- Draw RSI (Relative Strength Index) ---
-            # Calculate RSI manually to plot it
-            delta = close_prices.diff()
+                    extended_mean = [close_prices[-1]] + f_mean
+                    extended_lower = [close_prices[-1]] + f_lower
+                    extended_upper = [close_prices[-1]] + f_upper
+                    
+                    # Forecast Mean Line
+                    self.p1.plot(f_indices, extended_mean, pen=pg.mkPen('#ff1744', width=2, style=QtCore.Qt.PenStyle.DotLine), name="7G Tahmin", connect='finite')
+                    
+                    # Confidence Bands
+                    curve_lower = self.p1.plot(f_indices, extended_lower, pen=pg.mkPen(None), connect='finite')
+                    curve_upper = self.p1.plot(f_indices, extended_upper, pen=pg.mkPen(None), connect='finite')
+                    fill = pg.FillBetweenItem(curve_lower, curve_upper, brush=pg.mkBrush(255, 23, 68, 50))
+                    self.p1.addItem(fill)
+
+            # --- Draw RSI ---
+            delta = pd.Series(close_prices).diff()
             gain = delta.clip(lower=0)
             loss = -delta.clip(upper=0)
             avg_gain = gain.rolling(window=14).mean()
@@ -653,29 +719,25 @@ class MplCanvas(FigureCanvas):
             rs = avg_gain / avg_loss
             rsi = 100 - (100 / (1 + rs))
             
-            self.ax_rsi.plot(dates, rsi, color="#ffd600", linewidth=1.5, label="RSI-14")
+            self.rsi_values = rsi.values
+            self.p2.plot(x_indices, self.rsi_values, pen=pg.mkPen('#ffd600', width=2), name="RSI-14", connect='finite')
+            self.p2.setYRange(0, 100)
             
-            # Overbought / Oversold threshold lines
-            self.ax_rsi.axhline(70, color="#ff1744", linestyle="--", linewidth=0.8, alpha=0.7)
-            self.ax_rsi.axhline(30, color="#00e676", linestyle="--", linewidth=0.8, alpha=0.7)
-            self.ax_rsi.fill_between(dates, 30, 70, color="#ffffff", alpha=0.03)  # Neutral band shading
-            
-            self.ax_rsi.set_ylim(0, 100)
-            self.ax_rsi.set_ylabel("RSI (14)", color='#8f90a6')
-            self.ax_rsi.tick_params(colors='#8f90a6', labelsize=9)
-            self.ax_rsi.grid(True, color='#22232a', linestyle='-', alpha=0.5)
-            
-            # Formatting x-axis to be readable
-            self.fig.autofmt_xdate()
-            
-            # Call mplcyberpunk glow effect for stunning premium look
-            mplcyberpunk.add_glow_effects(ax=self.ax_price)
+            # Setup X-axis ticks (Custom Axis to show dates instead of indices)
+            def format_date(x_val, pos):
+                idx = int(x_val)
+                if 0 <= idx < len(self.x_dates):
+                    return self.x_dates[idx]
+                return ""
+                
+            ax2 = self.p2.getAxis('bottom')
+            ax2.tickStrings = lambda values, scale, spacing: [format_date(v, None) for v in values]
             
         except Exception as e:
             print("Error plotting charts:", str(e))
+            import traceback
+            import traceback
             traceback.print_exc()
-            
-        self.draw()
 
 # --- Main Dashboard Window ---
 
@@ -853,8 +915,8 @@ class FinancialAnalystWindow(QMainWindow):
             }
         """)
         # Seed default model name
-        self.model_combo.addItem("Google Gemini (Bulut)")
         self.model_combo.addItem("gpt-oss:120b-cloud")
+        self.model_combo.addItem("Google Gemini (Bulut)")
         self.model_combo.addItem("llama3")
         self.model_combo.addItem("mistral")
         header_layout.addWidget(self.model_combo)
@@ -950,7 +1012,8 @@ class FinancialAnalystWindow(QMainWindow):
         chart_card_layout = QVBoxLayout(chart_card)
         chart_card_layout.setContentsMargins(5, 5, 5, 5)
         
-        self.canvas = MplCanvas(width=7, height=5, dpi=100)
+        # --- Left Panel: Candlestick Chart & Technicals ---
+        self.canvas = InteractiveChartCanvas(self)
         chart_card_layout.addWidget(self.canvas)
         quant_left_split.addWidget(chart_card)
         
@@ -1192,6 +1255,11 @@ class FinancialAnalystWindow(QMainWindow):
         self.research_selected_btn.setStyleSheet("background-color: #2979ff; color: white;")
         self.research_selected_btn.clicked.connect(self.on_research_selected_clicked)
         status_layout.addWidget(self.research_selected_btn)
+        
+        self.stop_btn = QPushButton("Durdur")
+        self.stop_btn.setStyleSheet("background-color: #ff1744; color: white;")
+        self.stop_btn.clicked.connect(self.on_stop_clicked)
+        status_layout.addWidget(self.stop_btn)
         
         self.research_all_btn = QPushButton("Tümünü Güncelle")
         self.research_all_btn.setStyleSheet("background-color: #3e3f4b; color: white;")
@@ -1620,7 +1688,7 @@ class FinancialAnalystWindow(QMainWindow):
         # Retrieve selected Ollama/Cloud model
         model_name = self.model_combo.currentText().strip()
         if not model_name:
-            model_name = "gpt-oss:120b-cloud"
+            model_name = "llama3.1:8b"
             
         instruments = database.get_active_instruments()
         inst_dict = next((i for i in instruments if i["symbol"] == symbol), None)
@@ -1637,6 +1705,23 @@ class FinancialAnalystWindow(QMainWindow):
         
         # Start background thread execution
         worker.start()
+
+    def on_stop_clicked(self):
+        """Cancels all currently running background research threads gracefully."""
+        if not self.running_workers:
+            return
+            
+        for symbol, worker in self.running_workers.items():
+            worker.is_cancelled = True
+            self.append_log_to_console(
+                datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "System",
+                "WARNING",
+                f"[{symbol}] için durdurma sinyali gönderildi, mevcut adımdan sonra sonlanacak."
+            )
+            
+        if hasattr(self, 'chain_timer') and self.chain_timer.isActive():
+            self.chain_timer.stop()
 
     def on_research_all_clicked(self):
         """Iterates through all active instruments and chains background research workers."""

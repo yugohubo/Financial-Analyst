@@ -1,5 +1,0 @@
-- v2.0 için: otomatik al-sat sistemi çeşitli algoritmalar ve risk seviyeleriyle test edilir sanal ortamda sanal parayla.
-
-- TF-IDF (Term Frequency-Inverse Document Frequency), bir kelimenin belirli bir belge veya metin içerisindeki önemini ölçen istatistiksel bir yöntemdir. Doğal Dil İşleme (NLP) ve arama motoru algoritmalarında, metin sınıflandırma ve anahtar kelime çıkarma amacıyla kullanılır.
-
--fine tuning yapacğımız bir lokal modelle çalışıp gerçek haber ve bilgiyi bulmayı ona eğiteceğiz

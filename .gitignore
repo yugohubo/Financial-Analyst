@@ -15,3 +15,7 @@ __pycache__/
 
 # Çevre Değişkenleri (Şifreler, API Anahtarları vb. olursa diye)
 .env
+
+# Ekstra Klasrler
+marketing/
+Project Overview/Project Overview/

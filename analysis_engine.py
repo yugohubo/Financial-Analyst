@@ -219,7 +219,7 @@ class AnalysisEngine:
         """
         # 1. Fetch relevant articles from Vector Store (RAG)
         query_text = f"{name} {symbol} market rate trend inflation economy"
-        rag_results = self.vector_store.search(query_text, symbol=symbol, top_k=3)
+        rag_results = self.vector_store.search(query_text, symbol=symbol, top_k=6)
         
         rag_context = ""
         for i, (art, score) in enumerate(rag_results):
@@ -357,7 +357,7 @@ Son derece resmi, profesyonel, analitik ve bir ekonomist kalemiyle yazılmış r
 
         # 1. Fetch relevant articles from Vector Store (RAG)
         query_text = f"{name} {symbol} market rate trend inflation economy"
-        rag_results = self.vector_store.search(query_text, symbol=symbol, top_k=3)
+        rag_results = self.vector_store.search(query_text, symbol=symbol, top_k=6)
         
         rag_context = ""
         for i, (art, score) in enumerate(rag_results):
@@ -418,7 +418,9 @@ Son derece resmi, profesyonel, analitik ve bir ekonomist kalemiyle yazılmış r
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "temperature": 0.0  # Keep it highly deterministic and professional
+                    "temperature": 0.0,  # Keep it highly deterministic and professional
+                    "num_predict": 4096, # Force the model to allow up to 4096 tokens of output
+                    "num_ctx": 32768     # Expand the context window to 32K tokens for massive RAG capacity
                 }
             }
             
