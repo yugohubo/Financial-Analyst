@@ -13,6 +13,10 @@
   ve yapay zekâ destekli makroekonomist raporları üreten masaüstü finansal istihbarat platformu.
 </p>
 
+<p align="center">
+  <img src="anasayfa.png" alt="Otonom Finansal Analist Ana Ekran" width="100%" />
+</p>
+
 ---
 
 ## 🎯 Ne İşe Yarar?
@@ -92,7 +96,7 @@
 
 ### 🖥️ Premium Masaüstü Arayüzü
 - **Cyberpunk Dark Tema:** Neon yeşil, elektrik mavisi ve koyu arka plan ile göz yormayan premium görünüm
-- **Canlı Grafik Motoru:** Matplotlib + mplcyberpunk glow efektleriyle gömülü fiyat ve RSI grafikleri
+- **Canlı İnteraktif Grafik Motoru:** PyQtGraph ile 60 FPS akıcılığında; Zoom, Pan (Sürükleme) ve Dinamik Crosshair destekli fiyat ve RSI grafikleri
 - **ARIMA Tahmin Bandı:** 7 günlük gelecek projeksiyonu neon pembe kesikli çizgiyle grafik üzerinde
 - **Ajan Düşünce Konsolu:** Retro terminal tarzı log akışı — ajanın hangi siteyi araştırdığı, neyi elediği, neyi önemli bulduğu anlık görünür
 - **Dinamik Enstrüman Yönetimi:** Yahoo Finance autocomplete ile gerçek zamanlı sembol arama ve ekleme
@@ -138,7 +142,7 @@ Sistem önceden yapılandırılmış **10 küresel ve yerel varlığı** izler, 
 | **yfinance** | Yahoo Finance üzerinden tarihsel piyasa verisi çekme |
 | **pandas + numpy** | Veri manipülasyonu ve sayısal hesaplamalar |
 | **statsmodels (ARIMA)** | İstatistiksel zaman serisi tahmin modelleme |
-| **matplotlib + mplcyberpunk** | Gömülü grafik çizimi — neon glow efektleriyle premium görünüm |
+| **pyqtgraph** | Gömülü interaktif grafik çizimi — donanımsal ivmelendirme, zoom/pan ve crosshair desteği |
 
 ### Yapay Zekâ ve NLP
 | Teknoloji | Kullanım Amacı |
@@ -236,7 +240,7 @@ Uygulama, profesyonel finans terminalleri (Bloomberg Terminal, Refinitiv Eikon) 
 |-------|--------|
 | **Üst Bar** | Uygulama başlığı, Ollama durumu, model seçimi, ayarlar butonu |
 | **Sol Panel** | Varlık listesi, arama kutusu, sembol ekle/sil butonları |
-| **Merkez — Grafik** | Matplotlib gömülü fiyat grafiği + SMA çizgileri + ARIMA tahmin bandı |
+| **Merkez — Grafik** | PyQtGraph interaktif fiyat grafiği + SMA çizgileri + ARIMA tahmin bandı (Zoom/Pan destekli) |
 | **Merkez — RSI** | Aşırı alım/satım bölgelerini gösteren RSI-14 osilatörü |
 | **Alt Sol — Log** | Ajan düşünce ve canlı log akışı (retro terminal tarzı) |
 | **Alt Sağ — Rapor** | AI makroekonomist analiz raporu (Markdown render) |
@@ -295,8 +299,7 @@ yfinance>=0.2
 pandas>=2.0
 numpy>=1.24
 statsmodels>=0.14
-matplotlib>=3.7
-mplcyberpunk>=0.7
+pyqtgraph>=0.14.0
 httpx>=0.25
 beautifulsoup4>=4.12
 lxml>=4.9
