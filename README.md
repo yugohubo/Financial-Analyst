@@ -1,5 +1,7 @@
 Gerekli olan Blazin Fast Scraper API'sini eklemek için: https://github.com/yugohubo/fastapi-article-scraper
 
+Videolu Anlatım: https://drive.google.com/file/d/140wvV6IYDU6p_ioKBeVVDcdLLadYijGZ/view?usp=sharing
+
 
 
 <p align="center">
