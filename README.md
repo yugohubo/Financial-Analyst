@@ -1,3 +1,7 @@
+Gerekli olan Blazin Fast Scraper API'sini eklemek için: https://github.com/yugohubo/fastapi-article-scraper
+
+
+
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Windows%20Desktop-0078D4?style=for-the-badge&logo=windows&logoColor=white" />
   <img src="https://img.shields.io/badge/Engine-PyQt6%20Native-41CD52?style=for-the-badge&logo=qt&logoColor=white" />
